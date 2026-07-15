@@ -63,7 +63,7 @@ export function compileContract(sourceCode: string): CompilationResult {
     }
 
     // Pick the last contract defined (usually the main one if inheriting)
-    const mainContractName = contractNames[contractNames.length - 1];
+    const mainContractName = contractNames[contractNames.length - 1] as string;
     const contract = contracts[mainContractName];
 
     if (!contract.evm?.bytecode?.object) {
@@ -98,5 +98,5 @@ function resolveOpenZeppelinPath(): string {
     }
 
     // Fallback: let solc try to resolve naturally (will fail gracefully)
-    return candidates[0];
+    return candidates[0] as string;
 }

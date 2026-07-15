@@ -10,7 +10,13 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "keywords": ["solidity", "smart-contract", "security", "web3", "ai"],
+  "keywords": [
+    "solidity",
+    "smart-contract",
+    "security",
+    "web3",
+    "ai"
+  ],
   "author": "Aegis",
   "license": "MIT",
   "type": "commonjs",
@@ -19,16 +25,16 @@
     "dotenv": "^17.4.2",
     "ethers": "^6.17.0",
     "express": "^5.2.1",
-    "express-rate-limit": "^7.5.0",
+    "express-rate-limit": "^7.5.1",
     "openai": "^6.46.0",
     "solc": "^0.8.36"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^26.1.1",
-    "typescript": "^7.0.2",
     "nodemon": "^3.1.14",
     "tsx": "^4.23.1",
-    "vitest": "^3.1.0"
+    "typescript": "^7.0.2",
+    "vitest": "^3.2.7"
   }
 }

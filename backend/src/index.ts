@@ -168,7 +168,7 @@ app.post('/api/paid/guardrail', async (req, res) => {
  * ABI-encodes function call data.
  * GET /api/free/abi-encode?function=transfer(address,uint256)&args=0x...,100
  */
-app.post('/api/free/abi-encode', async (req, res) => {
+app.post('/api/free/abi-encode', async (req, res): Promise<any> => {
     try {
         const { types, values } = req.body;
 
@@ -200,7 +200,7 @@ app.post('/api/free/abi-encode', async (req, res) => {
  * POST /api/free/abi-decode
  * Body: { types: string[], data: "0x..." }
  */
-app.post('/api/free/abi-decode', async (req, res) => {
+app.post('/api/free/abi-decode', async (req, res): Promise<any> => {
     try {
         const types = req.body.types;
         const data = req.body.data;
@@ -231,7 +231,7 @@ app.post('/api/free/abi-decode', async (req, res) => {
  * POST /api/free/checksum-address
  * Body: { address: "0x..." }
  */
-app.post('/api/free/checksum-address', async (req, res) => {
+app.post('/api/free/checksum-address', async (req, res): Promise<any> => {
     try {
         const address = validateString(req.body.address, 'address', 100);
 

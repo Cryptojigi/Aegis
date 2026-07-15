@@ -5,6 +5,7 @@ export interface CompilationResult {
 }
 /**
  * Compiles Solidity code using solc.
+ * Supports @openzeppelin/contracts imports via remappings.
  * Returns the ABI and Bytecode of the first contract found.
  * If compilation fails, throws an Error with the solc error messages.
  */
