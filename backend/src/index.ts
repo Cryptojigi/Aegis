@@ -1,40 +1,106 @@
 import express from 'express';
 import dotenv from 'dotenv';
+import rateLimit from 'express-rate-limit';
 
 dotenv.config();
 
 const app = express();
-app.use(express.json());
-
 const PORT = process.env.PORT || 3001;
+
+// ---------------------------------------------------------------------------
+// Middleware
+// ---------------------------------------------------------------------------
+
+// Parse JSON with size limits to prevent abuse
+app.use(express.json({ limit: '500kb' }));
+
+// Global rate limiting: 100 requests per 15 min per IP
+const globalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many requests — try again later" }
+});
+app.use(globalLimiter);
+
+// ---------------------------------------------------------------------------
+// Imports
+// ---------------------------------------------------------------------------
 
 import { generateContract, auditContract, checkPromptInjection } from './services/llm';
 import { compileContract } from './services/compiler';
 import { generateDeploymentPayload } from './services/deployer';
 
-// --- A2A Builder Suite (Complex Workflows) ---
+// ---------------------------------------------------------------------------
+// Helper: Standard API response wrapper
+// ---------------------------------------------------------------------------
+
+interface ApiSuccess<T = any> {
+    status: "success";
+    data: T;
+}
+
+interface ApiError {
+    status: "error";
+    error: string;
+    code?: string;
+}
+
+function success<T>(data: T): ApiSuccess<T> {
+    return { status: "success", data };
+}
+
+function fail(error: string, code?: string): ApiError {
+    return { status: "error", error, code };
+}
+
+// ---------------------------------------------------------------------------
+// Validation helpers
+// ---------------------------------------------------------------------------
+
+function validateString(val: any, name: string, maxLen = 500_000): string {
+    if (typeof val !== 'string' || val.trim().length === 0) {
+        throw new ValidationError(`${name} is required and must be a non-empty string`);
+    }
+    if (val.length > maxLen) {
+        throw new ValidationError(`${name} exceeds maximum length of ${maxLen} characters`);
+    }
+    return val.trim();
+}
+
+class ValidationError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'ValidationError';
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Route: A2A Builder Suite (Complex Workflows)
+// ---------------------------------------------------------------------------
+
 app.post('/api/a2a/build-and-deploy', async (req, res) => {
     try {
-        const { prompt, constructorArgs = [] } = req.body;
-        if (!prompt) return res.status(400).json({ error: "Missing prompt" });
+        const prompt = validateString(req.body.prompt, 'prompt', 10_000);
+        const constructorArgs = Array.isArray(req.body.constructorArgs) ? req.body.constructorArgs : [];
 
-        console.log("1. Generating Solidity...");
+        // Phase 1: Generate Solidity
         let solidityCode = await generateContract(prompt);
         let compiled;
         let compilationSuccess = false;
-        
-        // Self-Healing Compiler Loop (Max 2 retries)
+
+        // Self-Healing Compiler Loop (max 3 attempts, 2 retries)
         for (let attempt = 1; attempt <= 3; attempt++) {
             try {
-                console.log(`2. Compiling (Attempt ${attempt})...`);
                 compiled = compileContract(solidityCode);
                 compilationSuccess = true;
-                break; // Success!
+                break;
             } catch (error: any) {
-                console.warn(`Compilation failed on attempt ${attempt}:`, error.message);
-                if (attempt === 3) throw new Error("Failed to compile after 3 attempts.");
-                // Ask LLM to fix it
-                console.log("Self-healing: Asking LLM to fix compiler errors...");
+                console.warn(`Compilation failed (attempt ${attempt}/3):`, error.message);
+                if (attempt === 3) {
+                    throw new Error(`Failed to compile after 3 attempts: ${error.message}`);
+                }
                 solidityCode = await generateContract(prompt, error.message);
             }
         }
@@ -43,65 +109,177 @@ app.post('/api/a2a/build-and-deploy', async (req, res) => {
             throw new Error("Compilation pipeline failed critically.");
         }
 
-        console.log("3. Generating Deployment Payload...");
-        const payload = generateDeploymentPayload(compiled.abi, compiled.bytecode, constructorArgs);
+        // Phase 2: Generate deployment payload
+        const deploymentPayload = generateDeploymentPayload(compiled.abi, compiled.bytecode, constructorArgs);
 
-        console.log("4. Running Security Audit...");
-        const auditReport = await auditContract(solidityCode);
+        // Phase 3: Security audit
+        const securityAudit = await auditContract(solidityCode);
 
-        res.json({
-            status: "success",
+        res.json(success({
             contractName: compiled.contractName,
             sourceCode: solidityCode,
             abi: compiled.abi,
-            deploymentPayload: payload,
-            securityAudit: auditReport
-        });
+            bytecode: compiled.bytecode,
+            deploymentPayload,
+            securityAudit
+        }));
     } catch (error: any) {
         console.error("Build & Deploy Error:", error);
-        res.status(500).json({ error: error.message });
+        const statusCode = error instanceof ValidationError ? 400 : 500;
+        res.status(statusCode).json(fail(error.message, error instanceof ValidationError ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR'));
     }
 });
 
-// --- A2MCP Security Suite (Paid Tier via x402) ---
-// const requirePayment = x402Middleware({ receiver: process.env.RECEIVER_WALLET_PRIVATE_KEY, callbackUrl: process.env.CALLBACK_BASE_URL });
-app.post('/api/paid/audit-contract', /* requirePayment, */ async (req, res) => {
+// ---------------------------------------------------------------------------
+// Route: A2MCP Security Suite (Paid Tier)
+// ---------------------------------------------------------------------------
+
+app.post('/api/paid/audit-contract', async (req, res) => {
     try {
-        const { sourceCode } = req.body;
-        if (!sourceCode) return res.status(400).json({ error: "Missing sourceCode" });
-        
+        const sourceCode = validateString(req.body.sourceCode, 'sourceCode', 100_000);
+
         const report = await auditContract(sourceCode);
-        res.json(report);
+        res.json(success(report));
     } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error("Audit Error:", error);
+        const statusCode = error instanceof ValidationError ? 400 : 500;
+        res.status(statusCode).json(fail(error.message, error instanceof ValidationError ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR'));
     }
 });
 
-app.post('/api/paid/guardrail', /* requirePayment, */ async (req, res) => {
+app.post('/api/paid/guardrail', async (req, res) => {
     try {
-        const { userPrompt } = req.body;
-        if (!userPrompt) return res.status(400).json({ error: "Missing userPrompt" });
+        const userPrompt = validateString(req.body.userPrompt, 'userPrompt', 10_000);
 
         const check = await checkPromptInjection(userPrompt);
-        res.json(check);
+        res.json(success(check));
     } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error("Guardrail Error:", error);
+        const statusCode = error instanceof ValidationError ? 400 : 500;
+        res.status(statusCode).json(fail(error.message, error instanceof ValidationError ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR'));
     }
 });
 
-// --- A2MCP Utility (Free Tier) ---
-app.post('/api/free/abi-decode', async (req, res) => {
-    // Basic stub for decoding hex data using ethers (usually needs the ABI to fully decode, 
-    // but can decode method signatures or standard ERC20 transfers).
-    res.json({ message: "ABI decode endpoint active." });
+// ---------------------------------------------------------------------------
+// Route: Free Utility Tier
+// ---------------------------------------------------------------------------
+
+/**
+ * ABI-encodes function call data.
+ * GET /api/free/abi-encode?function=transfer(address,uint256)&args=0x...,100
+ */
+app.post('/api/free/abi-encode', async (req, res) => {
+    try {
+        const { types, values } = req.body;
+
+        if (!Array.isArray(types) || !Array.isArray(values)) {
+            return res.status(400).json(fail(
+                "'types' (string[]) and 'values' (any[]) are required",
+                'VALIDATION_ERROR'
+            ));
+        }
+        if (types.length !== values.length) {
+            return res.status(400).json(fail(
+                `'types' (${types.length}) and 'values' (${values.length}) length mismatch`,
+                'VALIDATION_ERROR'
+            ));
+        }
+
+        const abiCoder = new (await import('ethers')).AbiCoder();
+        const encoded = abiCoder.encode(types, values);
+
+        res.json(success({ encoded, types, values }));
+    } catch (error: any) {
+        console.error("ABI Encode Error:", error);
+        res.status(400).json(fail(error.message, 'ENCODE_ERROR'));
+    }
 });
 
-app.post('/api/free/verify-deployment', async (req, res) => {
-    const { contractAddress, sourceCode } = req.body;
-    // Here we would call the OKLink/X Layer Scan API to verify the contract
-    res.json({ status: "Pending verification on X Layer explorer", contractAddress });
+/**
+ * Decodes ABI-encoded data.
+ * POST /api/free/abi-decode
+ * Body: { types: string[], data: "0x..." }
+ */
+app.post('/api/free/abi-decode', async (req, res) => {
+    try {
+        const types = req.body.types;
+        const data = req.body.data;
+
+        if (!Array.isArray(types) || types.length === 0) {
+            return res.status(400).json(fail("'types' (string[]) is required", 'VALIDATION_ERROR'));
+        }
+        if (!data || typeof data !== 'string' || !data.startsWith('0x')) {
+            return res.status(400).json(fail("'data' (0x-prefixed hex string) is required", 'VALIDATION_ERROR'));
+        }
+
+        const abiCoder = new (await import('ethers')).AbiCoder();
+        const decoded = abiCoder.decode(types, data);
+
+        res.json(success({
+            types,
+            data,
+            decoded: decoded.map((v: any) => v.toString())
+        }));
+    } catch (error: any) {
+        console.error("ABI Decode Error:", error);
+        res.status(400).json(fail(error.message, 'DECODE_ERROR'));
+    }
 });
+
+/**
+ * Simple address checksum tool.
+ * POST /api/free/checksum-address
+ * Body: { address: "0x..." }
+ */
+app.post('/api/free/checksum-address', async (req, res) => {
+    try {
+        const address = validateString(req.body.address, 'address', 100);
+
+        if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
+            return res.status(400).json(fail("Invalid EVM address format", 'VALIDATION_ERROR'));
+        }
+
+        const checksummed = (await import('ethers')).getAddress(address);
+
+        res.json(success({
+            original: address,
+            checksummed,
+            valid: checksummed.toLowerCase() === address.toLowerCase()
+        }));
+    } catch (error: any) {
+        console.error("Checksum Error:", error);
+        res.status(400).json(fail(error.message, 'CHECKSUM_ERROR'));
+    }
+});
+
+/**
+ * Health check.
+ */
+app.get('/api/health', async (_req, res) => {
+    res.json(success({
+        status: "healthy",
+        version: "1.0.0",
+        timestamp: new Date().toISOString()
+    }));
+});
+
+// ---------------------------------------------------------------------------
+// Global error handler
+// ---------------------------------------------------------------------------
+
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error("Unhandled error:", err);
+    res.status(500).json(fail("An unexpected error occurred", 'INTERNAL_ERROR'));
+});
+
+// ---------------------------------------------------------------------------
+// Start
+// ---------------------------------------------------------------------------
 
 app.listen(PORT, () => {
     console.log(`🛡️ Aegis backend running on port ${PORT}`);
+    console.log(`   Health: http://localhost:${PORT}/api/health`);
+    console.log(`   Builder: POST /api/a2a/build-and-deploy`);
+    console.log(`   Audit: POST /api/paid/audit-contract`);
+    console.log(`   Guardrail: POST /api/paid/guardrail`);
 });
