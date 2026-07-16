@@ -1,0 +1,33 @@
+diff a/backend/src/services/compiler.ts b/backend/src/services/compiler.ts	(rejected hunks)
+@@ -64,14 +64,20 @@ export function compileContract(sourceCode: string): CompilationResult {
+ 
+     // Pick the last contract defined (usually the main one if inheriting)
+     const mainContractName = contractNames[contractNames.length - 1];
++    if (!mainContractName) {
++        throw new Error("No contract name found in compilation output.");
++    }
+     const contract = contracts[mainContractName];
++    if (!contract) {
++        throw new Error(`Contract "${mainContractName}" not found in compilation output.`);
++    }
+ 
+     if (!contract.evm?.bytecode?.object) {
+         throw new Error("Compilation produced no bytecode — contract may be abstract or an interface.");
+     }
+ 
+     return {
+-        abi: contract.abi,
++        abi: contract.abi ?? [],
+         bytecode: contract.evm.bytecode.object,
+         contractName: mainContractName
+     };
+@@ -97,6 +103,7 @@ function resolveOpenZeppelinPath(): string {
+         }
+     }
+ 
+-    // Fallback: let solc try to resolve naturally (will fail gracefully)
+-    return candidates[0];
++    // Fallback: use first candidate (solc will fail gracefully if not found)
++    const fallback = candidates[0];
++    return fallback ?? path.resolve(process.cwd(), 'node_modules/@openzeppelin/contracts/');
+ }

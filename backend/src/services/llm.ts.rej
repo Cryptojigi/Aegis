@@ -1,0 +1,28 @@
+diff a/backend/src/services/llm.ts b/backend/src/services/llm.ts	(rejected hunks)
+@@ -48,7 +48,7 @@ The compiler does NOT have access to npm packages.`;
+             max_tokens: 4096,
+         });
+ 
+-        const code = completion.choices[0].message.content || "";
++        const code = completion.choices[0]?.message?.content ?? "";
+         // Clean up markdown fences if the model hallucinates them
+         return code
+             .replace(/```solidity/gi, '')
+@@ -95,7 +95,7 @@ Set is_safe to true only if vulnerabilities array is empty.`;
+             max_tokens: 4096,
+         });
+ 
+-        const result = completion.choices[0].message.content || "{}";
++        const result = completion.choices[0]?.message?.content ?? "{}";
+         return extractJson(result);
+     } catch (error: any) {
+         console.error("LLM Audit Error:", error);
+@@ -181,7 +181,7 @@ Return ONLY a JSON object in this exact format (no markdown, no extra text):
+             temperature: 0.1,
+         });
+ 
+-        const result = completion.choices[0].message.content || "{}";
++        const result = completion.choices[0]?.message?.content ?? "{}";
+         return extractJson(result);
+     } catch (error: any) {
+         console.error("LLM Guardrail Error:", error);

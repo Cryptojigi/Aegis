@@ -31,6 +31,7 @@ app.use(globalLimiter);
 import { generateContract, auditContract, checkPromptInjection } from './services/llm';
 import { compileContract } from './services/compiler';
 import { generateDeploymentPayload } from './services/deployer';
+import { requirePayment } from './middleware/x402';
 
 // ---------------------------------------------------------------------------
 // Helper: Standard API response wrapper
@@ -115,7 +116,7 @@ app.post('/api/a2a/build-and-deploy', async (req, res) => {
         // Phase 3: Security audit
         const securityAudit = await auditContract(solidityCode);
 
-        res.json(success({
+        return res.json(success({
             contractName: compiled.contractName,
             sourceCode: solidityCode,
             abi: compiled.abi,
@@ -126,7 +127,7 @@ app.post('/api/a2a/build-and-deploy', async (req, res) => {
     } catch (error: any) {
         console.error("Build & Deploy Error:", error);
         const statusCode = error instanceof ValidationError ? 400 : 500;
-        res.status(statusCode).json(fail(error.message, error instanceof ValidationError ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR'));
+        return res.status(statusCode).json(fail(error.message, error instanceof ValidationError ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR'));
     }
 });
 
@@ -134,29 +135,29 @@ app.post('/api/a2a/build-and-deploy', async (req, res) => {
 // Route: A2MCP Security Suite (Paid Tier)
 // ---------------------------------------------------------------------------
 
-app.post('/api/paid/audit-contract', async (req, res) => {
+app.post('/api/paid/audit-contract', requirePayment({ amount: 1.5 }), async (req, res) => {
     try {
         const sourceCode = validateString(req.body.sourceCode, 'sourceCode', 100_000);
 
         const report = await auditContract(sourceCode);
-        res.json(success(report));
+        return res.json(success(report));
     } catch (error: any) {
         console.error("Audit Error:", error);
         const statusCode = error instanceof ValidationError ? 400 : 500;
-        res.status(statusCode).json(fail(error.message, error instanceof ValidationError ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR'));
+        return res.status(statusCode).json(fail(error.message, error instanceof ValidationError ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR'));
     }
 });
 
-app.post('/api/paid/guardrail', async (req, res) => {
+app.post('/api/paid/guardrail', requirePayment({ amount: 0.5 }), async (req, res) => {
     try {
         const userPrompt = validateString(req.body.userPrompt, 'userPrompt', 10_000);
 
         const check = await checkPromptInjection(userPrompt);
-        res.json(success(check));
+        return res.json(success(check));
     } catch (error: any) {
         console.error("Guardrail Error:", error);
         const statusCode = error instanceof ValidationError ? 400 : 500;
-        res.status(statusCode).json(fail(error.message, error instanceof ValidationError ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR'));
+        return res.status(statusCode).json(fail(error.message, error instanceof ValidationError ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR'));
     }
 });
 
@@ -188,10 +189,10 @@ app.post('/api/free/abi-encode', async (req, res): Promise<any> => {
         const abiCoder = new (await import('ethers')).AbiCoder();
         const encoded = abiCoder.encode(types, values);
 
-        res.json(success({ encoded, types, values }));
+        return res.json(success({ encoded, types, values }));
     } catch (error: any) {
         console.error("ABI Encode Error:", error);
-        res.status(400).json(fail(error.message, 'ENCODE_ERROR'));
+        return res.status(400).json(fail(error.message, 'ENCODE_ERROR'));
     }
 });
 
@@ -215,14 +216,14 @@ app.post('/api/free/abi-decode', async (req, res): Promise<any> => {
         const abiCoder = new (await import('ethers')).AbiCoder();
         const decoded = abiCoder.decode(types, data);
 
-        res.json(success({
+        return res.json(success({
             types,
             data,
             decoded: decoded.map((v: any) => v.toString())
         }));
     } catch (error: any) {
         console.error("ABI Decode Error:", error);
-        res.status(400).json(fail(error.message, 'DECODE_ERROR'));
+        return res.status(400).json(fail(error.message, 'DECODE_ERROR'));
     }
 });
 
@@ -241,14 +242,14 @@ app.post('/api/free/checksum-address', async (req, res): Promise<any> => {
 
         const checksummed = (await import('ethers')).getAddress(address);
 
-        res.json(success({
+        return res.json(success({
             original: address,
             checksummed,
             valid: checksummed.toLowerCase() === address.toLowerCase()
         }));
     } catch (error: any) {
         console.error("Checksum Error:", error);
-        res.status(400).json(fail(error.message, 'CHECKSUM_ERROR'));
+        return res.status(400).json(fail(error.message, 'CHECKSUM_ERROR'));
     }
 });
 
@@ -256,7 +257,7 @@ app.post('/api/free/checksum-address', async (req, res): Promise<any> => {
  * Health check.
  */
 app.get('/api/health', async (_req, res) => {
-    res.json(success({
+    return res.json(success({
         status: "healthy",
         version: "1.0.0",
         timestamp: new Date().toISOString()
@@ -269,7 +270,7 @@ app.get('/api/health', async (_req, res) => {
 
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error("Unhandled error:", err);
-    res.status(500).json(fail("An unexpected error occurred", 'INTERNAL_ERROR'));
+    return res.status(500).json(fail("An unexpected error occurred", 'INTERNAL_ERROR'));
 });
 
 // ---------------------------------------------------------------------------
