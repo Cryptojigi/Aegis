@@ -29,6 +29,7 @@ interface PaymentChallenge {
         asset: string;
         amount: string;
         payTo: string;
+        decimals?: number;
     }>;
 }
 
@@ -39,8 +40,8 @@ interface PaymentChallenge {
 const RECEIVING_WALLET = process.env.RECEIVING_WALLET_ADDRESS || '';
 const ADMIN_BYPASS_KEY = process.env.ADMIN_BYPASS_KEY || '';
 
-// X Layer USDT (official OKX bridge address)
-const USDT_XLAYER = process.env.USDT_CONTRACT_ADDRESS || '0x1e4a5963abfd975d8c9021ce480b42188849d41d';
+// X Layer USDT (correct contract address)
+const USDT_XLAYER = process.env.USDT_CONTRACT_ADDRESS || '0x779ded0c9e1022225f8e0630b35a9b54be713736';
 
 // X Layer RPC
 const RPC_URL = process.env.RPC_URL || 'https://rpc.xlayer.tech';
@@ -73,6 +74,7 @@ function buildChallenge(amount: number): PaymentChallenge {
                 asset: USDT_XLAYER,
                 amount: toBaseUnits(amount),
                 payTo: RECEIVING_WALLET,
+                decimals: USDT_DECIMALS,
             },
         ],
     };
