@@ -135,8 +135,12 @@ app.post('/api/a2a/build-and-deploy', async (req, res) => {
 // Route: A2MCP Security Suite (Paid Tier)
 // ---------------------------------------------------------------------------
 
-app.post('/api/paid/audit-contract', requirePayment({ amount: 1.5 }), async (req, res) => {
+app.all('/api/paid/audit-contract', requirePayment({ amount: 1.5 }), async (req, res) => {
     try {
+        if (req.method !== 'POST') {
+            return res.status(405).json(fail("Method Not Allowed. Please use POST with required body.", "METHOD_NOT_ALLOWED"));
+        }
+
         const sourceCode = validateString(req.body.sourceCode, 'sourceCode', 100_000);
 
         const report = await auditContract(sourceCode);
@@ -148,8 +152,12 @@ app.post('/api/paid/audit-contract', requirePayment({ amount: 1.5 }), async (req
     }
 });
 
-app.post('/api/paid/guardrail', requirePayment({ amount: 0.5 }), async (req, res) => {
+app.all('/api/paid/guardrail', requirePayment({ amount: 0.5 }), async (req, res) => {
     try {
+        if (req.method !== 'POST') {
+            return res.status(405).json(fail("Method Not Allowed. Please use POST with required body.", "METHOD_NOT_ALLOWED"));
+        }
+
         const userPrompt = validateString(req.body.userPrompt, 'userPrompt', 10_000);
 
         const check = await checkPromptInjection(userPrompt);
