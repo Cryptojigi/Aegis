@@ -3,7 +3,7 @@
  *
  * Implements the OKX x402 payment protocol for Aegis's paid endpoints.
  * Returns HTTP 402 with the standard accepts[] challenge format,
- * and accepts X-PAYMENT authorization headers on replay.
+ * and verifies EIP-3009 signatures on replay.
  */
 
 import { Request, Response, NextFunction } from 'express';
@@ -33,8 +33,6 @@ interface PaymentChallenge {
 // Configuration
 // ---------------------------------------------------------------------------
 
-// Keep original case for challenge output (checksum-safe),
-// use RECEIVING_WALLET_LC only for internal comparisons.
 const RECEIVING_WALLET = process.env.RECEIVING_WALLET_ADDRESS || '';
 const RECEIVING_WALLET_LC = RECEIVING_WALLET.toLowerCase();
 const ADMIN_BYPASS_KEY = process.env.ADMIN_BYPASS_KEY || '';
@@ -52,15 +50,14 @@ function toBaseUnits(amount: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// EIP-712 / EIP-3009 Setup
+// EIP-712 / EIP-3009 Domain & Types
 // ---------------------------------------------------------------------------
 
-const eip712Domain = {
-    name: 'Tether USD',
-    version: '1',
-    chainId: Number(CHAIN_ID),
-    verifyingContract: USDT_XLAYER
-};
+const EIP712_DOMAINS = [
+    { name: 'Tether USD', version: '1', chainId: Number(CHAIN_ID), verifyingContract: USDT_XLAYER },
+    { name: 'USDT', version: '1', chainId: Number(CHAIN_ID), verifyingContract: USDT_XLAYER },
+    { name: 'Tether USD', version: '2', chainId: Number(CHAIN_ID), verifyingContract: USDT_XLAYER },
+];
 
 const eip712Types = {
     TransferWithAuthorization: [
@@ -89,6 +86,79 @@ function buildChallenge(amount: number): PaymentChallenge {
 }
 
 // ---------------------------------------------------------------------------
+// Header Parsing — Try multiple formats
+// ---------------------------------------------------------------------------
+
+function tryParsePaymentHeader(raw: string): any | null {
+    const trimmed = raw.trim();
+
+    // 1. Try raw JSON first
+    try {
+        return JSON.parse(trimmed);
+    } catch {}
+
+    // 2. Strip scheme prefix: "x402 {...}" or "payment:{...}"
+    for (const prefix of ['x402 ', 'payment:', 'payment ']) {
+        if (trimmed.toLowerCase().startsWith(prefix)) {
+            try {
+                return JSON.parse(trimmed.slice(prefix.length).trim());
+            } catch {}
+        }
+    }
+
+    // 3. Try base64 decode
+    try {
+        const decoded = Buffer.from(trimmed, 'base64').toString('utf-8');
+        return JSON.parse(decoded);
+    } catch {}
+
+    // 4. Try base64 after stripping scheme prefix
+    for (const prefix of ['x402 ', 'payment:', 'payment ']) {
+        if (trimmed.toLowerCase().startsWith(prefix)) {
+            try {
+                const b64Part = trimmed.slice(prefix.length).trim();
+                const decoded = Buffer.from(b64Part, 'base64').toString('utf-8');
+                return JSON.parse(decoded);
+            } catch {}
+        }
+    }
+
+    return null;
+}
+
+// ---------------------------------------------------------------------------
+// Signature Extraction — Handle multiple formats
+// ---------------------------------------------------------------------------
+
+function extractSignature(payload: any, auth: any): any | null {
+    // Direct signature field (hex string)
+    if (payload.signature && typeof payload.signature === 'string') {
+        return payload.signature;
+    }
+    if (auth.signature && typeof auth.signature === 'string') {
+        return auth.signature;
+    }
+
+    // {v, r, s} object at top level or in auth
+    if (auth.v !== undefined && auth.r && auth.s) {
+        return ethers.Signature.from({ v: Number(auth.v), r: auth.r, s: auth.s });
+    }
+    if (payload.v !== undefined && payload.r && payload.s) {
+        return ethers.Signature.from({ v: Number(payload.v), r: payload.r, s: payload.s });
+    }
+
+    // Nested signature object
+    if (payload.signature && typeof payload.signature === 'object') {
+        const sig = payload.signature;
+        if (sig.v !== undefined && sig.r && sig.s) {
+            return ethers.Signature.from({ v: Number(sig.v), r: sig.r, s: sig.s });
+        }
+    }
+
+    return null;
+}
+
+// ---------------------------------------------------------------------------
 // Middleware
 // ---------------------------------------------------------------------------
 
@@ -104,90 +174,118 @@ export function requirePayment(config: PaymentConfig) {
             }
 
             // -----------------------------------------------------------------
-            // 2. Check for PAYMENT-SIGNATURE or X-PAYMENT header
+            // 2. Check ALL possible payment headers
             // -----------------------------------------------------------------
-            const rawHeader = req.headers['payment-signature'] || req.headers['x-payment'];
-            const paymentHeader = rawHeader as string | undefined;
+            const rawHeader = (
+                req.headers['payment-signature'] ||
+                req.headers['x-payment'] ||
+                req.headers['authorization']
+            ) as string | undefined;
 
-            if (paymentHeader && paymentHeader.trim().length > 0) {
-                console.log('[x402] Payment header present, validating EIP-3009 signature...');
+            if (rawHeader && rawHeader.trim().length > 0) {
+                console.log('[x402] Payment header found, attempting verification...');
+                console.log(`[x402] Header value (first 200 chars): ${rawHeader.substring(0, 200)}`);
 
-                try {
-                    // Strip prefixes
-                    let jsonString = paymentHeader.trim();
-                    if (jsonString.toLowerCase().startsWith('x402 ')) {
-                        jsonString = jsonString.slice(5).trim();
-                    } else if (jsonString.toLowerCase().startsWith('payment:')) {
-                        jsonString = jsonString.slice(8).trim();
-                    }
+                // Parse the header
+                const payload = tryParsePaymentHeader(rawHeader);
 
-                    const payload = JSON.parse(jsonString);
-
-                    // Extract auth fields
-                    const auth = payload.authorization || payload;
-                    let signature = payload.signature || auth.signature;
-                    
-                    if (!signature) {
-                        if (auth.v && auth.r && auth.s) {
-                            signature = { v: auth.v, r: auth.r, s: auth.s };
-                        } else if (payload.v && payload.r && payload.s) {
-                            signature = { v: payload.v, r: payload.r, s: payload.s };
-                        }
-                    }
-
-                    if (!auth || !auth.from || !auth.to || !auth.value || !signature) {
-                        console.error('[x402] Missing EIP-3009 fields in payload');
-                        return res.status(402).json({ error: 'Missing EIP-3009 fields', code: 'PAYMENT_INVALID' });
-                    }
-
-                    // Validate recipient
-                    if (auth.to.toLowerCase() !== RECEIVING_WALLET_LC) {
-                        console.error(`[x402] Invalid recipient: ${auth.to}`);
-                        return res.status(402).json({ error: 'Invalid recipient', code: 'PAYMENT_INVALID' });
-                    }
-
-                    // Validate amount
-                    const requiredBase = BigInt(toBaseUnits(config.amount));
-                    if (BigInt(auth.value) < requiredBase) {
-                        console.error(`[x402] Insufficient amount: ${auth.value} < ${requiredBase}`);
-                        return res.status(402).json({ error: 'Insufficient amount', code: 'PAYMENT_INVALID' });
-                    }
-
-                    // Reconstruct message
-                    const message = {
-                        from: auth.from,
-                        to: auth.to,
-                        value: auth.value,
-                        validAfter: auth.validAfter,
-                        validBefore: auth.validBefore,
-                        nonce: auth.nonce
-                    };
-
-                    let recovered: string;
-                    try {
-                        recovered = ethers.verifyTypedData(eip712Domain, eip712Types, message, signature);
-                    } catch (e) {
-                        // Fallback domain name in case bridged USDT uses 'USDT'
-                        const fallbackDomain = { ...eip712Domain, name: 'USDT' };
-                        recovered = ethers.verifyTypedData(fallbackDomain, eip712Types, message, signature);
-                    }
-
-                    if (recovered.toLowerCase() === auth.from.toLowerCase()) {
-                        console.log('[x402] EIP-3009 Signature Verified ✅');
-                        return next();
-                    } else {
-                        console.error(`[x402] Signature mismatch! Recovered ${recovered}, expected ${auth.from}`);
-                        return res.status(402).json({ error: 'Invalid EIP-3009 signature', code: 'PAYMENT_INVALID' });
-                    }
-
-                } catch (error: any) {
-                    console.error('[x402] Parsing/Verification Error:', error.message);
-                    // Fall through to issue the 402 challenge below
+                if (!payload) {
+                    console.error('[x402] Could not parse payment header as JSON');
+                    return res.status(402).json({
+                        error: 'Could not parse payment header',
+                        code: 'PAYMENT_INVALID',
+                        hint: 'Expected JSON payload with EIP-3009 authorization fields',
+                        receivedHeaderPreview: rawHeader.substring(0, 100),
+                    });
                 }
+
+                console.log(`[x402] Parsed payload keys: ${Object.keys(payload).join(', ')}`);
+
+                // Extract authorization fields
+                const auth = payload.authorization || payload;
+                console.log(`[x402] Auth keys: ${Object.keys(auth).join(', ')}`);
+
+                // Extract signature
+                const signature = extractSignature(payload, auth);
+
+                if (!signature) {
+                    console.error('[x402] Could not extract signature from payload');
+                    return res.status(402).json({
+                        error: 'Missing signature in payment payload',
+                        code: 'PAYMENT_INVALID',
+                        payloadKeys: Object.keys(payload),
+                        authKeys: Object.keys(auth),
+                    });
+                }
+
+                if (!auth.from || !auth.to || auth.value === undefined) {
+                    console.error('[x402] Missing required EIP-3009 fields');
+                    return res.status(402).json({
+                        error: 'Missing required EIP-3009 fields (from, to, value)',
+                        code: 'PAYMENT_INVALID',
+                        authKeys: Object.keys(auth),
+                    });
+                }
+
+                // Validate recipient
+                if (auth.to.toLowerCase() !== RECEIVING_WALLET_LC) {
+                    console.error(`[x402] Recipient mismatch: got ${auth.to}, expected ${RECEIVING_WALLET}`);
+                    return res.status(402).json({
+                        error: 'Payment recipient mismatch',
+                        code: 'PAYMENT_INVALID',
+                    });
+                }
+
+                // Validate amount
+                const requiredBase = BigInt(toBaseUnits(config.amount));
+                const paidAmount = BigInt(auth.value);
+                if (paidAmount < requiredBase) {
+                    console.error(`[x402] Insufficient: paid ${paidAmount}, need ${requiredBase}`);
+                    return res.status(402).json({
+                        error: 'Insufficient payment amount',
+                        code: 'PAYMENT_INVALID',
+                    });
+                }
+
+                // Build EIP-712 message
+                const message = {
+                    from: auth.from,
+                    to: auth.to,
+                    value: auth.value.toString(),
+                    validAfter: (auth.validAfter || '0').toString(),
+                    validBefore: (auth.validBefore || '0').toString(),
+                    nonce: auth.nonce || ethers.ZeroHash,
+                };
+
+                // Try verification against multiple possible domain separators
+                let recovered: string | null = null;
+                let lastError: string = '';
+
+                for (const domain of EIP712_DOMAINS) {
+                    try {
+                        recovered = ethers.verifyTypedData(domain, eip712Types, message, signature);
+                        if (recovered.toLowerCase() === auth.from.toLowerCase()) {
+                            console.log(`[x402] EIP-3009 Verified ✅ (domain: ${domain.name} v${domain.version})`);
+                            return next();
+                        }
+                        lastError = `Recovered ${recovered} but expected ${auth.from}`;
+                    } catch (e: any) {
+                        lastError = e.message;
+                        continue;
+                    }
+                }
+
+                // If we got here, no domain matched
+                console.error(`[x402] Signature verification failed across all domains. Last error: ${lastError}`);
+                return res.status(402).json({
+                    error: 'EIP-3009 signature verification failed',
+                    code: 'PAYMENT_INVALID',
+                    debug: lastError,
+                });
             }
 
             // -----------------------------------------------------------------
-            // 3. No valid payment — issue challenge
+            // 3. No payment header present — issue challenge
             // -----------------------------------------------------------------
             const challenge = buildChallenge(config.amount);
             const challengeJson = JSON.stringify(challenge);
@@ -203,6 +301,7 @@ export function requirePayment(config: PaymentConfig) {
             return res.status(500).json({
                 status: 'error',
                 error: 'Payment verification unavailable',
+                detail: error.message,
                 code: 'PAYMENT_SYSTEM_ERROR',
             });
         }
