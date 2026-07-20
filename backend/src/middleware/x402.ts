@@ -54,7 +54,7 @@ function buildChallenge(amount: number): PaymentChallenge {
     return {
         accepts: [
             {
-                scheme: 'payment',
+                scheme: 'x402',
                 network: `eip155:${CHAIN_ID}`,
                 asset: USDT_XLAYER,
                 amount: toBaseUnits(amount),
@@ -81,16 +81,24 @@ export function requirePayment(config: PaymentConfig) {
             }
 
             // -----------------------------------------------------------------
-            // 2. Check for X-PAYMENT header (replay with EIP-3009 authorization)
+            // 2. Check for PAYMENT-SIGNATURE header (x402 v2)
             // -----------------------------------------------------------------
-            const xPayment = req.headers['x-payment'] as string | undefined;
+            const paymentSignature = req.headers['payment-signature'] as string | undefined;
 
-            if (xPayment && xPayment.trim().length > 0) {
-                console.log('[x402] X-PAYMENT header present — accepting authorization');
+            if (paymentSignature && paymentSignature.trim().length > 0) {
+                console.log('[x402] PAYMENT-SIGNATURE header present — accepting authorization');
+
+                // Decode the standard authorization_header format ("<scheme> <credentials>")
+                const parts = paymentSignature.trim().split(' ');
+                if (parts.length >= 2) {
+                    const authScheme = parts[0];
+                    const credentials = parts[1];
+                    console.log(`[x402] Decoded auth scheme: ${authScheme}, credentials present`);
+                }
 
                 // The OKX payment system handles signature verification before replay.
-                // If the request reaches here with an X-PAYMENT header, the payment
-                // authorization has already passed EIP-3009 verification on the OKX side.
+                // If the request reaches here with a valid PAYMENT-SIGNATURE header, the payment
+                // authorization has already passed verification on the OKX side.
                 // Settlement happens asynchronously on-chain.
                 return next();
             }
