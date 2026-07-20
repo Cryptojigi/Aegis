@@ -240,6 +240,7 @@ export function requirePayment(config: PaymentConfig) {
                     return res.status(402).json({
                         error: 'Payment recipient mismatch',
                         code: 'PAYMENT_INVALID',
+                        expected: { payTo: RECEIVING_WALLET, asset: USDT_XLAYER, network: `eip155:${CHAIN_ID}` }
                     });
                 }
 
@@ -251,6 +252,7 @@ export function requirePayment(config: PaymentConfig) {
                     return res.status(402).json({
                         error: 'Insufficient payment amount',
                         code: 'PAYMENT_INVALID',
+                        expected: { payTo: RECEIVING_WALLET, asset: USDT_XLAYER, network: `eip155:${CHAIN_ID}` }
                     });
                 }
 
@@ -288,6 +290,7 @@ export function requirePayment(config: PaymentConfig) {
                     error: 'EIP-3009 signature verification failed',
                     code: 'PAYMENT_INVALID',
                     debug: lastError,
+                    expected: { payTo: RECEIVING_WALLET, asset: USDT_XLAYER, network: `eip155:${CHAIN_ID}` }
                 });
             }
 
