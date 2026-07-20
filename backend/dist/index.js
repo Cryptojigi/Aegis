@@ -87,7 +87,7 @@ app.post('/api/a2a/build-and-deploy', async (req, res) => {
         const deploymentPayload = (0, deployer_1.generateDeploymentPayload)(compiled.abi, compiled.bytecode, constructorArgs);
         // Phase 3: Security audit
         const securityAudit = await (0, llm_1.auditContract)(solidityCode);
-        return res.json(success({
+        res.json(success({
             contractName: compiled.contractName,
             sourceCode: solidityCode,
             abi: compiled.abi,
@@ -99,34 +99,40 @@ app.post('/api/a2a/build-and-deploy', async (req, res) => {
     catch (error) {
         console.error("Build & Deploy Error:", error);
         const statusCode = error instanceof ValidationError ? 400 : 500;
-        return res.status(statusCode).json(fail(error.message, error instanceof ValidationError ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR'));
+        res.status(statusCode).json(fail(error.message, error instanceof ValidationError ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR'));
     }
 });
 // ---------------------------------------------------------------------------
 // Route: A2MCP Security Suite (Paid Tier)
 // ---------------------------------------------------------------------------
-app.post('/api/paid/audit-contract', (0, x402_1.requirePayment)({ amount: 1.5 }), async (req, res) => {
+app.all('/api/paid/audit-contract', (0, x402_1.requirePayment)({ amount: 1.5 }), async (req, res) => {
     try {
+        if (req.method !== 'POST') {
+            return res.status(405).json(fail("Method Not Allowed. Please use POST with body: { sourceCode: '...' }", 'METHOD_NOT_ALLOWED'));
+        }
         const sourceCode = validateString(req.body.sourceCode, 'sourceCode', 100_000);
         const report = await (0, llm_1.auditContract)(sourceCode);
-        return res.json(success(report));
+        res.json(success(report));
     }
     catch (error) {
         console.error("Audit Error:", error);
         const statusCode = error instanceof ValidationError ? 400 : 500;
-        return res.status(statusCode).json(fail(error.message, error instanceof ValidationError ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR'));
+        res.status(statusCode).json(fail(error.message, error instanceof ValidationError ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR'));
     }
 });
-app.post('/api/paid/guardrail', (0, x402_1.requirePayment)({ amount: 0.5 }), async (req, res) => {
+app.all('/api/paid/guardrail', (0, x402_1.requirePayment)({ amount: 0.5 }), async (req, res) => {
     try {
+        if (req.method !== 'POST') {
+            return res.status(405).json(fail("Method Not Allowed. Please use POST with body: { userPrompt: '...' }", 'METHOD_NOT_ALLOWED'));
+        }
         const userPrompt = validateString(req.body.userPrompt, 'userPrompt', 10_000);
         const check = await (0, llm_1.checkPromptInjection)(userPrompt);
-        return res.json(success(check));
+        res.json(success(check));
     }
     catch (error) {
         console.error("Guardrail Error:", error);
         const statusCode = error instanceof ValidationError ? 400 : 500;
-        return res.status(statusCode).json(fail(error.message, error instanceof ValidationError ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR'));
+        res.status(statusCode).json(fail(error.message, error instanceof ValidationError ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR'));
     }
 });
 // ---------------------------------------------------------------------------
@@ -147,11 +153,11 @@ app.post('/api/free/abi-encode', async (req, res) => {
         }
         const abiCoder = new (await import('ethers')).AbiCoder();
         const encoded = abiCoder.encode(types, values);
-        return res.json(success({ encoded, types, values }));
+        res.json(success({ encoded, types, values }));
     }
     catch (error) {
         console.error("ABI Encode Error:", error);
-        return res.status(400).json(fail(error.message, 'ENCODE_ERROR'));
+        res.status(400).json(fail(error.message, 'ENCODE_ERROR'));
     }
 });
 /**
@@ -171,7 +177,7 @@ app.post('/api/free/abi-decode', async (req, res) => {
         }
         const abiCoder = new (await import('ethers')).AbiCoder();
         const decoded = abiCoder.decode(types, data);
-        return res.json(success({
+        res.json(success({
             types,
             data,
             decoded: decoded.map((v) => v.toString())
@@ -179,7 +185,7 @@ app.post('/api/free/abi-decode', async (req, res) => {
     }
     catch (error) {
         console.error("ABI Decode Error:", error);
-        return res.status(400).json(fail(error.message, 'DECODE_ERROR'));
+        res.status(400).json(fail(error.message, 'DECODE_ERROR'));
     }
 });
 /**
@@ -194,7 +200,7 @@ app.post('/api/free/checksum-address', async (req, res) => {
             return res.status(400).json(fail("Invalid EVM address format", 'VALIDATION_ERROR'));
         }
         const checksummed = (await import('ethers')).getAddress(address);
-        return res.json(success({
+        res.json(success({
             original: address,
             checksummed,
             valid: checksummed.toLowerCase() === address.toLowerCase()
@@ -202,14 +208,14 @@ app.post('/api/free/checksum-address', async (req, res) => {
     }
     catch (error) {
         console.error("Checksum Error:", error);
-        return res.status(400).json(fail(error.message, 'CHECKSUM_ERROR'));
+        res.status(400).json(fail(error.message, 'CHECKSUM_ERROR'));
     }
 });
 /**
  * Health check.
  */
 app.get('/api/health', async (_req, res) => {
-    return res.json(success({
+    res.json(success({
         status: "healthy",
         version: "1.0.0",
         timestamp: new Date().toISOString()
@@ -220,7 +226,7 @@ app.get('/api/health', async (_req, res) => {
 // ---------------------------------------------------------------------------
 app.use((err, _req, res, _next) => {
     console.error("Unhandled error:", err);
-    return res.status(500).json(fail("An unexpected error occurred", 'INTERNAL_ERROR'));
+    res.status(500).json(fail("An unexpected error occurred", 'INTERNAL_ERROR'));
 });
 // ---------------------------------------------------------------------------
 // Start

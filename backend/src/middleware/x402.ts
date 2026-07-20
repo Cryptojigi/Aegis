@@ -74,7 +74,7 @@ function buildChallenge(amount: number): PaymentChallenge {
     return {
         accepts: [
             {
-                scheme: 'x402',
+                scheme: 'payment',
                 network: `eip155:${CHAIN_ID}`,
                 asset: USDT_XLAYER,
                 amount: toBaseUnits(amount),
