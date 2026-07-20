@@ -7,6 +7,7 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
+import { ethers } from 'ethers';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -50,6 +51,28 @@ function toBaseUnits(amount: number): string {
     return base.toString();
 }
 
+// ---------------------------------------------------------------------------
+// EIP-712 / EIP-3009 Setup
+// ---------------------------------------------------------------------------
+
+const eip712Domain = {
+    name: 'Tether USD',
+    version: '1',
+    chainId: Number(CHAIN_ID),
+    verifyingContract: USDT_XLAYER
+};
+
+const eip712Types = {
+    TransferWithAuthorization: [
+        { name: 'from', type: 'address' },
+        { name: 'to', type: 'address' },
+        { name: 'value', type: 'uint256' },
+        { name: 'validAfter', type: 'uint256' },
+        { name: 'validBefore', type: 'uint256' },
+        { name: 'nonce', type: 'bytes32' },
+    ]
+};
+
 function buildChallenge(amount: number): PaymentChallenge {
     return {
         accepts: [
@@ -81,26 +104,86 @@ export function requirePayment(config: PaymentConfig) {
             }
 
             // -----------------------------------------------------------------
-            // 2. Check for PAYMENT-SIGNATURE header (x402 v2)
+            // 2. Check for PAYMENT-SIGNATURE or X-PAYMENT header
             // -----------------------------------------------------------------
-            const paymentSignature = req.headers['payment-signature'] as string | undefined;
+            const rawHeader = req.headers['payment-signature'] || req.headers['x-payment'];
+            const paymentHeader = rawHeader as string | undefined;
 
-            if (paymentSignature && paymentSignature.trim().length > 0) {
-                console.log('[x402] PAYMENT-SIGNATURE header present — accepting authorization');
+            if (paymentHeader && paymentHeader.trim().length > 0) {
+                console.log('[x402] Payment header present, validating EIP-3009 signature...');
 
-                // Decode the standard authorization_header format ("<scheme> <credentials>")
-                const parts = paymentSignature.trim().split(' ');
-                if (parts.length >= 2) {
-                    const authScheme = parts[0];
-                    const credentials = parts[1];
-                    console.log(`[x402] Decoded auth scheme: ${authScheme}, credentials present`);
+                try {
+                    // Strip prefixes
+                    let jsonString = paymentHeader.trim();
+                    if (jsonString.toLowerCase().startsWith('x402 ')) {
+                        jsonString = jsonString.slice(5).trim();
+                    } else if (jsonString.toLowerCase().startsWith('payment:')) {
+                        jsonString = jsonString.slice(8).trim();
+                    }
+
+                    const payload = JSON.parse(jsonString);
+
+                    // Extract auth fields
+                    const auth = payload.authorization || payload;
+                    let signature = payload.signature || auth.signature;
+                    
+                    if (!signature) {
+                        if (auth.v && auth.r && auth.s) {
+                            signature = { v: auth.v, r: auth.r, s: auth.s };
+                        } else if (payload.v && payload.r && payload.s) {
+                            signature = { v: payload.v, r: payload.r, s: payload.s };
+                        }
+                    }
+
+                    if (!auth || !auth.from || !auth.to || !auth.value || !signature) {
+                        console.error('[x402] Missing EIP-3009 fields in payload');
+                        return res.status(402).json({ error: 'Missing EIP-3009 fields', code: 'PAYMENT_INVALID' });
+                    }
+
+                    // Validate recipient
+                    if (auth.to.toLowerCase() !== RECEIVING_WALLET_LC) {
+                        console.error(`[x402] Invalid recipient: ${auth.to}`);
+                        return res.status(402).json({ error: 'Invalid recipient', code: 'PAYMENT_INVALID' });
+                    }
+
+                    // Validate amount
+                    const requiredBase = BigInt(toBaseUnits(config.amount));
+                    if (BigInt(auth.value) < requiredBase) {
+                        console.error(`[x402] Insufficient amount: ${auth.value} < ${requiredBase}`);
+                        return res.status(402).json({ error: 'Insufficient amount', code: 'PAYMENT_INVALID' });
+                    }
+
+                    // Reconstruct message
+                    const message = {
+                        from: auth.from,
+                        to: auth.to,
+                        value: auth.value,
+                        validAfter: auth.validAfter,
+                        validBefore: auth.validBefore,
+                        nonce: auth.nonce
+                    };
+
+                    let recovered: string;
+                    try {
+                        recovered = ethers.verifyTypedData(eip712Domain, eip712Types, message, signature);
+                    } catch (e) {
+                        // Fallback domain name in case bridged USDT uses 'USDT'
+                        const fallbackDomain = { ...eip712Domain, name: 'USDT' };
+                        recovered = ethers.verifyTypedData(fallbackDomain, eip712Types, message, signature);
+                    }
+
+                    if (recovered.toLowerCase() === auth.from.toLowerCase()) {
+                        console.log('[x402] EIP-3009 Signature Verified ✅');
+                        return next();
+                    } else {
+                        console.error(`[x402] Signature mismatch! Recovered ${recovered}, expected ${auth.from}`);
+                        return res.status(402).json({ error: 'Invalid EIP-3009 signature', code: 'PAYMENT_INVALID' });
+                    }
+
+                } catch (error: any) {
+                    console.error('[x402] Parsing/Verification Error:', error.message);
+                    // Fall through to issue the 402 challenge below
                 }
-
-                // The OKX payment system handles signature verification before replay.
-                // If the request reaches here with a valid PAYMENT-SIGNATURE header, the payment
-                // authorization has already passed verification on the OKX side.
-                // Settlement happens asynchronously on-chain.
-                return next();
             }
 
             // -----------------------------------------------------------------
