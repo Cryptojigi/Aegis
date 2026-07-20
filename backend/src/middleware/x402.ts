@@ -201,12 +201,19 @@ export function requirePayment(config: PaymentConfig) {
 
                 console.log(`[x402] Parsed payload keys: ${Object.keys(payload).join(', ')}`);
 
+                // After tryParsePaymentHeader succeeds, unwrap nested payload
+                let dw = payload.data || payload;
+                // The task-402-pay client nests under a "payload" key
+                if (dw.payload && !dw.authorization && !dw.signature) {
+                    dw = dw.payload;
+                }
+
                 // Extract authorization fields
-                const auth = payload.authorization || payload;
+                const auth = dw.authorization || dw;
                 console.log(`[x402] Auth keys: ${Object.keys(auth).join(', ')}`);
 
                 // Extract signature
-                const signature = extractSignature(payload, auth);
+                const signature = extractSignature(dw, auth);
 
                 if (!signature) {
                     console.error('[x402] Could not extract signature from payload');
