@@ -59,6 +59,8 @@ function toBaseUnits(amount: number): string {
 // ---------------------------------------------------------------------------
 
 const EIP712_DOMAINS = [
+    { name: 'USD₮0', version: '1', chainId: Number(CHAIN_ID), verifyingContract: USDT_XLAYER },
+    { name: 'USDT0', version: '1', chainId: Number(CHAIN_ID), verifyingContract: USDT_XLAYER },
     { name: 'Tether USD', version: '1', chainId: Number(CHAIN_ID), verifyingContract: USDT_XLAYER },
     { name: 'USDT', version: '1', chainId: Number(CHAIN_ID), verifyingContract: USDT_XLAYER },
     { name: 'Tether USD', version: '2', chainId: Number(CHAIN_ID), verifyingContract: USDT_XLAYER },
@@ -320,7 +322,7 @@ export function requirePayment(config: PaymentConfig) {
                 // If we got here, no domain matched
                 console.error(`[x402] Signature verification failed across all domains. Last error: ${lastError}`);
                 return res.status(402).json({
-                    error: 'EIP-712 TokenPayment signature verification failed',
+                    error: 'EIP-712 TransferWithAuthorization signature verification failed',
                     code: 'PAYMENT_INVALID',
                     debug: lastError,
                     expected: { scheme: 'exact', payTo: RECEIVING_WALLET, asset: USDT_XLAYER, network: `eip155:${CHAIN_ID}` }
