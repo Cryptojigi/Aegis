@@ -89,7 +89,7 @@ function buildChallenge(amount: number): PaymentChallenge {
     return {
         x402Version: 2,
         resource: {
-            url: "https://aegis-security.okx.ai",
+            url: "https://aegis-dzyd.onrender.com",
             description: "Aegis AI Smart Contract Audit and Guardrails"
         },
         accepts: [
