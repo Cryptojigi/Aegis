@@ -19,6 +19,11 @@ interface PaymentConfig {
 }
 
 interface PaymentChallenge {
+    x402Version: number;
+    resource: {
+        url: string;
+        description: string;
+    };
     accepts: Array<{
         scheme: string;
         network: string;
@@ -59,22 +64,37 @@ const EIP712_DOMAINS = [
     { name: 'Tether USD', version: '2', chainId: Number(CHAIN_ID), verifyingContract: USDT_XLAYER },
 ];
 
-const eip712Types = {
-    TransferWithAuthorization: [
-        { name: 'from', type: 'address' },
-        { name: 'to', type: 'address' },
-        { name: 'value', type: 'uint256' },
-        { name: 'validAfter', type: 'uint256' },
-        { name: 'validBefore', type: 'uint256' },
-        { name: 'nonce', type: 'bytes32' },
-    ]
-};
+const eip712TypesList = [
+    {
+        TokenPayment: [
+            { name: 'from', type: 'address' },
+            { name: 'to', type: 'address' },
+            { name: 'amount', type: 'uint256' },
+            { name: 'validAfter', type: 'uint256' },
+            { name: 'validBefore', type: 'uint256' },
+            { name: 'nonce', type: 'bytes32' },
+        ]
+    },
+    {
+        TokenPayment: [
+            { name: 'from', type: 'address' },
+            { name: 'to', type: 'address' },
+            { name: 'amount', type: 'uint256' },
+            { name: 'nonce', type: 'bytes32' },
+        ]
+    }
+];
 
 function buildChallenge(amount: number): PaymentChallenge {
     return {
+        x402Version: 2,
+        resource: {
+            url: "https://aegis-security.okx.ai",
+            description: "Aegis AI Smart Contract Audit and Guardrails"
+        },
         accepts: [
             {
-                scheme: 'payment',
+                scheme: 'exact',
                 network: `eip155:${CHAIN_ID}`,
                 asset: USDT_XLAYER,
                 amount: toBaseUnits(amount),
@@ -225,10 +245,13 @@ export function requirePayment(config: PaymentConfig) {
                     });
                 }
 
-                if (!auth.from || !auth.to || auth.value === undefined) {
-                    console.error('[x402] Missing required EIP-3009 fields');
+                // Extract payment amount (could be 'amount' or 'value')
+                const paymentAmount = auth.amount !== undefined ? auth.amount : auth.value;
+
+                if (!auth.from || !auth.to || paymentAmount === undefined) {
+                    console.error('[x402] Missing required TokenPayment fields');
                     return res.status(402).json({
-                        error: 'Missing required EIP-3009 fields (from, to, value)',
+                        error: 'Missing required TokenPayment fields (from, to, amount/value)',
                         code: 'PAYMENT_INVALID',
                         authKeys: Object.keys(auth),
                     });
@@ -246,7 +269,7 @@ export function requirePayment(config: PaymentConfig) {
 
                 // Validate amount
                 const requiredBase = BigInt(toBaseUnits(config.amount));
-                const paidAmount = BigInt(auth.value);
+                const paidAmount = BigInt(paymentAmount);
                 if (paidAmount < requiredBase) {
                     console.error(`[x402] Insufficient: paid ${paidAmount}, need ${requiredBase}`);
                     return res.status(402).json({
@@ -256,41 +279,51 @@ export function requirePayment(config: PaymentConfig) {
                     });
                 }
 
-                // Build EIP-712 message
-                const message = {
+                // Build possible EIP-712 messages
+                const messageFull = {
                     from: auth.from,
                     to: auth.to,
-                    value: auth.value.toString(),
+                    amount: paymentAmount.toString(),
                     validAfter: (auth.validAfter || '0').toString(),
                     validBefore: (auth.validBefore || '0').toString(),
                     nonce: auth.nonce || ethers.ZeroHash,
                 };
+                
+                const messageShort = {
+                    from: auth.from,
+                    to: auth.to,
+                    amount: paymentAmount.toString(),
+                    nonce: auth.nonce || ethers.ZeroHash,
+                };
 
-                // Try verification against multiple possible domain separators
+                // Try verification against multiple possible domain separators and types
                 let recovered: string | null = null;
                 let lastError: string = '';
 
                 for (const domain of EIP712_DOMAINS) {
-                    try {
-                        recovered = ethers.verifyTypedData(domain, eip712Types, message, signature);
-                        if (recovered.toLowerCase() === auth.from.toLowerCase()) {
-                            console.log(`[x402] EIP-3009 Verified ✅ (domain: ${domain.name} v${domain.version})`);
-                            return next();
+                    for (const typesDef of eip712TypesList) {
+                        try {
+                            const msg = typesDef.TokenPayment.length === 6 ? messageFull : messageShort;
+                            recovered = ethers.verifyTypedData(domain, typesDef, msg, signature);
+                            if (recovered.toLowerCase() === auth.from.toLowerCase()) {
+                                console.log(`[x402] TokenPayment Verified ✅ (domain: ${domain.name} v${domain.version}, fields: ${typesDef.TokenPayment.length})`);
+                                return next();
+                            }
+                            lastError = `Recovered ${recovered} but expected ${auth.from}`;
+                        } catch (e: any) {
+                            lastError = e.message;
+                            continue;
                         }
-                        lastError = `Recovered ${recovered} but expected ${auth.from}`;
-                    } catch (e: any) {
-                        lastError = e.message;
-                        continue;
                     }
                 }
 
                 // If we got here, no domain matched
                 console.error(`[x402] Signature verification failed across all domains. Last error: ${lastError}`);
                 return res.status(402).json({
-                    error: 'EIP-3009 signature verification failed',
+                    error: 'EIP-712 TokenPayment signature verification failed',
                     code: 'PAYMENT_INVALID',
                     debug: lastError,
-                    expected: { payTo: RECEIVING_WALLET, asset: USDT_XLAYER, network: `eip155:${CHAIN_ID}` }
+                    expected: { scheme: 'exact', payTo: RECEIVING_WALLET, asset: USDT_XLAYER, network: `eip155:${CHAIN_ID}` }
                 });
             }
 
