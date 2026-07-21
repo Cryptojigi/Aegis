@@ -66,20 +66,20 @@ const EIP712_DOMAINS = [
 
 const eip712TypesList = [
     {
-        TokenPayment: [
+        TransferWithAuthorization: [
             { name: 'from', type: 'address' },
             { name: 'to', type: 'address' },
-            { name: 'amount', type: 'uint256' },
+            { name: 'value', type: 'uint256' },
             { name: 'validAfter', type: 'uint256' },
             { name: 'validBefore', type: 'uint256' },
             { name: 'nonce', type: 'bytes32' },
         ]
     },
     {
-        TokenPayment: [
+        TransferWithAuthorization: [
             { name: 'from', type: 'address' },
             { name: 'to', type: 'address' },
-            { name: 'amount', type: 'uint256' },
+            { name: 'value', type: 'uint256' },
             { name: 'nonce', type: 'bytes32' },
         ]
     }
@@ -283,7 +283,7 @@ export function requirePayment(config: PaymentConfig) {
                 const messageFull = {
                     from: auth.from,
                     to: auth.to,
-                    amount: paymentAmount.toString(),
+                    value: paymentAmount.toString(),
                     validAfter: (auth.validAfter || '0').toString(),
                     validBefore: (auth.validBefore || '0').toString(),
                     nonce: auth.nonce || ethers.ZeroHash,
@@ -292,7 +292,7 @@ export function requirePayment(config: PaymentConfig) {
                 const messageShort = {
                     from: auth.from,
                     to: auth.to,
-                    amount: paymentAmount.toString(),
+                    value: paymentAmount.toString(),
                     nonce: auth.nonce || ethers.ZeroHash,
                 };
 
@@ -303,10 +303,10 @@ export function requirePayment(config: PaymentConfig) {
                 for (const domain of EIP712_DOMAINS) {
                     for (const typesDef of eip712TypesList) {
                         try {
-                            const msg = typesDef.TokenPayment.length === 6 ? messageFull : messageShort;
+                            const msg = typesDef.TransferWithAuthorization.length === 6 ? messageFull : messageShort;
                             recovered = ethers.verifyTypedData(domain, typesDef, msg, signature);
                             if (recovered.toLowerCase() === auth.from.toLowerCase()) {
-                                console.log(`[x402] TokenPayment Verified ✅ (domain: ${domain.name} v${domain.version}, fields: ${typesDef.TokenPayment.length})`);
+                                console.log(`[x402] TransferWithAuthorization Verified ✅ (domain: ${domain.name} v${domain.version}, fields: ${typesDef.TransferWithAuthorization.length})`);
                                 return next();
                             }
                             lastError = `Recovered ${recovered} but expected ${auth.from}`;
